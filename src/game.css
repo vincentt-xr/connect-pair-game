@@ -1,0 +1,19 @@
+.connect-pairs-game { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: auto; }
+.connect-pairs-game *, .connect-pairs-game *::before, .connect-pairs-game *::after { box-sizing: border-box; }
+.game-board { position: absolute; inset: 0; touch-action: none; user-select: none; }
+.game-board__paths { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.game-board__paths path { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2.4; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, .3)); }
+.game-path--preview { opacity: .82; stroke-dasharray: 1.5 1.3; }
+.game-path--error { stroke: #ff3850; stroke-dasharray: 1.5 1.3; animation: path-shake .22s linear 2; }
+.nose-cursor { position: absolute; z-index: 3; width: 20px; height: 20px; transform: translate(-50%, -50%); border: 2px solid #fff; border-radius: 50%; background: rgba(255,255,255,.18); box-shadow: 0 0 0 2px rgba(0,0,0,.35), 0 2px 10px rgba(0,0,0,.35); pointer-events: none; }
+.nose-cursor--dragging { background: rgba(255,255,255,.75); transform: translate(-50%, -50%) scale(.72); }
+.pair-token { --token-color: #ff3e5f; position: absolute; z-index: 2; width: 48px; height: 52px; transform: translate(-50%, -50%); border: 0; padding: 0; background: transparent; cursor: crosshair; touch-action: none; }
+.pair-token:focus-visible { outline: 3px solid #fff; outline-offset: 4px; border-radius: 50%; }.pair-token:disabled { cursor: default; }
+.pair-token__bear { position: absolute; left: 8px; top: 10px; width: 32px; height: 35px; border: 2px solid rgba(255,255,255,.55); border-radius: 46% 46% 42% 42%; background: radial-gradient(circle at 34% 38%, #fff 0 2px, transparent 2.5px), radial-gradient(circle at 66% 38%, #fff 0 2px, transparent 2.5px), radial-gradient(circle at 50% 61%, rgba(255,255,255,.64) 0 3px, transparent 3.5px), var(--token-color); box-shadow: inset -5px -7px 8px rgba(0,0,0,.16), 0 5px 10px rgba(0,0,0,.27); transition: transform .2s ease, filter .2s ease; }
+.pair-token__bear::before, .pair-token__bear::after { position: absolute; top: -8px; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.55); border-radius: 50%; background: var(--token-color); content: ""; }.pair-token__bear::before { left: -3px; }.pair-token__bear::after { right: -3px; }
+.pair-token__bear--circle { border-radius: 50%; }.pair-token__bear--triangle, .pair-token__bear--square, .pair-token__bear--diamond, .pair-token__bear--hexagon { border-radius: 4px; }
+.pair-token__bear--triangle { clip-path: polygon(50% 0, 100% 100%, 0 100%); }.pair-token__bear--square { border-radius: 5px; }.pair-token__bear--diamond { transform: rotate(45deg) scale(.82); border-radius: 5px; }.pair-token__bear--hexagon { clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); }
+.pair-token__bear--circle::before, .pair-token__bear--circle::after, .pair-token__bear--triangle::before, .pair-token__bear--triangle::after, .pair-token__bear--square::before, .pair-token__bear--square::after, .pair-token__bear--diamond::before, .pair-token__bear--diamond::after, .pair-token__bear--hexagon::before, .pair-token__bear--hexagon::after { display: none; }
+.pair-token:hover .pair-token__bear { transform: scale(1.08) rotate(-4deg); filter: brightness(1.13); }.pair-token--completed .pair-token__bear { transform: scale(.82); filter: saturate(.55); opacity: .62; }
+@keyframes path-shake { 50% { transform: translateX(1px); } }
+@media (prefers-reduced-motion: reduce) { .game-path--error { animation: none; }.pair-token__bear { transition: none; } }
