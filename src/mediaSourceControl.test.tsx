@@ -98,7 +98,9 @@ describe("MediaSourceControl · unframed", () => {
   });
 
   it("keeps the webcam entry, unchanged from today", async () => {
-    render(<MediaSourceControl value={defaultMediaSources[0]} onChange={vi.fn()} />);
+    const webcam = defaultMediaSources.find((p) => p.kind === "webcam");
+    expect(webcam).toBeDefined();
+    render(<MediaSourceControl value={webcam!} onChange={vi.fn()} />);
 
     await openPanel();
     await screen.findByRole("combobox");
@@ -121,7 +123,7 @@ describe("MediaSourceControl · unframed", () => {
     await openPanel();
     const select = (await screen.findByRole("combobox")) as HTMLSelectElement;
     expect(select.value).toBe("configured");
-    expect([...select.options].map((o) => o.value)).toContain("sdk-video-1");
+    expect([...select.options].map((o) => o.value)).toContain("sdk-video-idle-woman");
   });
 });
 
