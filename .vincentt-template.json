@@ -39,9 +39,17 @@
   ],
   "creator": [
     "src/Scene.tsx",
-    "src/FaceBoundingBox.tsx",
-    "src/FooterHud.tsx",
-    "src/HandBoundingBox.tsx",
-    "src/frame.config.ts"
+    "src/frame.config.ts",
+    "src/Game.tsx",
+    "src/Game.test.tsx",
+    "src/GameBoard.tsx",
+    "src/PairToken.tsx",
+    "src/gameData.ts",
+    "src/gameData.test.ts",
+    "src/gameRules.ts",
+    "src/gameRules.test.ts",
+    "src/connectionPath.ts",
+    "src/celebration.ts",
+    "src/game.css"
   ]
 }
