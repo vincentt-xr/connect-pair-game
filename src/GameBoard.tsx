@@ -60,6 +60,8 @@ export const GameBoard = ({ tokens, connections, nosePoint, onConnect, onLoss }:
     if (!token) { window.clearTimeout(hoverTimer.current); hoveredId.current = undefined; return undefined; }
     if (hoveredId.current !== token.id) { window.clearTimeout(hoverTimer.current); hoveredId.current = token.id; hoverTimer.current = window.setTimeout(() => setActive({ from: token, points: [token] }), 2000); }
     return undefined;
+    // The helpers are rebuilt every render and completedPairIds follows connections; listing them would re-run the nose step on unrelated renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nosePoint, active, tokens, connections]);
   useEffect(() => () => { window.clearTimeout(errorTimer.current); window.clearTimeout(hoverTimer.current); }, []);
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {

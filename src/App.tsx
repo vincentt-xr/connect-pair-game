@@ -1,23 +1,46 @@
-/* eslint-disable react/no-unknown-property */
-import { useCallback, useEffect, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { flushSync } from "react-dom";
 import {
   XRProvider,
   XRScene,
   VideoBackground,
   XRMediaSource,
-  AspectRatioContainer,
 } from "@vincentt-xr/sdk";
-import { useXRContext, useXRReady, useXRError } from "@vincentt-xr/sdk/low-level";
+import {
+  useXRContext,
+  useXRError,
+  useXRPipelineSnapshot,
+  useXRReady,
+} from "@vincentt-xr/sdk/low-level";
 import { mountViewerBeacon, reportSession } from "@vincentt-xr/analytics";
+import { openConsoleChannel } from "@vincentt-xr/harness";
 import { PerspectiveCamera } from "@react-three/drei";
 
 import { Scene } from "./Scene";
 import { PreviewAnchors } from "./PreviewAnchors";
-import { announcedPresets, chooseMediaSource, isFramed, pickFramedDefault } from "./framed";
+import { FrameContainer } from "./FrameContainer";
+import { CaptureControls } from "./CaptureControls";
+import {
+  announcedPresets,
+  chooseMediaSource,
+  isFramed,
+  pickFramedDefault,
+  recordRequest,
+  requestsWebcam,
+} from "./framed";
 import type { MediaSourceEnv } from "./framed";
 import { streamFromImageUrl, streamFromVideoUrl } from "./mediaStream";
-import { openConsoleChannel } from "@vincentt-xr/harness";
+import {
+  deriveExperienceStatus,
+  publishExperienceStatus,
+} from "./experienceStatus";
 import { MediaSourceControl } from "./MediaSourceControl";
 import type { MediaPreset } from "./MediaSourceControl";
 
@@ -25,8 +48,26 @@ import type { MediaPreset } from "./MediaSourceControl";
 // Referenced by URL (not bundled) so it stays out of the published bundle —
 // publish runs the webcam default and never hits this path. Editor preview
 // always passes a real VITE_INPUT_URL, so this is a dev/last-resort fallback.
+// Read once: the address does not change while the app runs. In record mode the
+// canvas keeps a fixed pixel ratio and adaptive quality stays off, so a photo
+// or a take has the screen's resolution from the first frame to the last and
+// the recorder never sees the buffer change size mid-file.
+const RECORD = recordRequest();
+const RECORD_CANVAS = RECORD.enabled
+  ? { dpr: Math.min(typeof window === "undefined" ? 1 : window.devicePixelRatio || 1, 2) }
+  : {};
+
 const FALLBACK_VIDEO_URL =
-  "https://cdn.vincentt.studio/assets/preview/v2/videos/Head_tilt_woman.mp4";
+  "https://cdn.vincentt.studio/assets/sdk/debug-ui/v1/videos/idle-woman.mp4";
+const MOBILE_XR_ACCEPTANCE_HARNESS_ENABLED =
+  (globalThis as { VCT_MOBILE_XR_ACCEPTANCE_HARNESS?: boolean })
+    .VCT_MOBILE_XR_ACCEPTANCE_HARNESS === true;
+const MobileXRAcceptanceHarness = MOBILE_XR_ACCEPTANCE_HARNESS_ENABLED
+  ? lazy(async () => ({
+      default: (await import("./MobileXRAcceptanceHarness"))
+        .MobileXRAcceptanceHarness,
+    }))
+  : null;
 
 /**
  * Picks the media source and starts the XR session. Runs once on mount.
@@ -36,12 +77,15 @@ const FALLBACK_VIDEO_URL =
  *   - "video": loop VITE_INPUT_URL (or FALLBACK_VIDEO_URL if unset)
  *   - "photo": draw VITE_INPUT_URL to a canvas as a static 1-frame stream
  *
- * Photo/video sources are pre-mirrored to cancel the SDK's selfie flip.
+ * Photo/video streams are bound with their `sourceKind`, so the SDK draws them
+ * as filmed and names left/right as the person's own side. Without it a stream
+ * is taken for a mirrored webcam.
  *
- * FRAMED: the webcam default is replaced by an SDK video preset. A framed app
- * has no camera grant (the embedder delegates none, deliberately), so starting
- * on the webcam would open with a permission error whose advice cannot work.
- * A configured source is never overridden — see `chooseMediaSource`.
+ * FRAMED: the webcam default is replaced by an SDK video preset, so a framed
+ * app does not open on a camera prompt nobody asked for. If the app's own
+ * address carries `source=webcam` (the gallery's Live frame), or the creator
+ * built with `VITE_FRAMED_SOURCE=webcam`, it starts on the webcam instead. A
+ * configured source is never overridden: see `chooseMediaSource`.
  */
 export const MediaSourceBinder = ({
   onSourceSelected,
@@ -52,6 +96,12 @@ export const MediaSourceBinder = ({
   env?: MediaSourceEnv;
 }) => {
   const { session } = useXRContext();
+  // The trackers the scene mounts register on their own mount effects, which
+  // run AFTER this binder's (it is an earlier sibling). The framed branch waits
+  // one macrotask before reading, so the list it sees is the scene's.
+  const pipeline = useXRPipelineSnapshot();
+  const pipelineRef = useRef(pipeline);
+  pipelineRef.current = pipeline;
 
   useEffect(() => {
     let cancelled = false;
@@ -59,8 +109,13 @@ export const MediaSourceBinder = ({
 
     const init = async () => {
       const choice = chooseMediaSource(
-        { VITE_INPUT_SOURCE: env.VITE_INPUT_SOURCE, VITE_INPUT_URL: env.VITE_INPUT_URL },
+        {
+          VITE_INPUT_SOURCE: env.VITE_INPUT_SOURCE,
+          VITE_INPUT_URL: env.VITE_INPUT_URL,
+          VITE_FRAMED_SOURCE: env.VITE_FRAMED_SOURCE,
+        },
         isFramed(),
+        requestsWebcam(),
       );
 
       // The switcher is controlled and holds no source state of its own, so the
@@ -73,23 +128,51 @@ export const MediaSourceBinder = ({
         const handle = await streamFromVideoUrl(url);
         stopVideo = handle.stop;
         if (cancelled) return;
-        await session.setMediaSource({ source: XRMediaSource.STREAM, stream: handle.stream });
-        onSourceSelected?.({ id: "configured", kind: "video", label: "Configured input", url });
+        await session.setMediaSource({
+          source: XRMediaSource.STREAM,
+          stream: handle.stream,
+          sourceKind: "video",
+        });
+        onSourceSelected?.({
+          id: "configured",
+          kind: "video",
+          label: "Configured input",
+          url,
+        });
       } else if (choice.kind === "framedPreset") {
         // Dynamic import: the preset module carries 12 CDN URLs and must not
         // reach a production bundle through a static import from app source.
-        const { sdkVideoMediaSources } = await import("@vincentt-xr/sdk/debug-ui/media-source");
-        const preset = pickFramedDefault(sdkVideoMediaSources);
-        if (!preset?.url) throw new Error("no video preset available for the framed default");
+        const { sdkVideoMediaSources } = await import(
+          "@vincentt-xr/sdk/debug-ui/media-source"
+        );
+        await new Promise((resolve) => {
+          setTimeout(resolve, 0);
+        });
+        if (cancelled) return;
+        // A hand scene opens on a hand clip, a body scene on a body clip.
+        const preset = pickFramedDefault(
+          sdkVideoMediaSources,
+          pipelineRef.current,
+        );
+        if (!preset?.url)
+          throw new Error("no video preset available for the framed default");
         const handle = await streamFromVideoUrl(preset.url);
         stopVideo = handle.stop;
         if (cancelled) return;
-        await session.setMediaSource({ source: XRMediaSource.STREAM, stream: handle.stream });
+        await session.setMediaSource({
+          source: XRMediaSource.STREAM,
+          stream: handle.stream,
+          sourceKind: "video",
+        });
         onSourceSelected?.(preset);
       } else if (choice.kind === "photo") {
         const stream = await streamFromImageUrl(choice.url);
         if (cancelled) return;
-        await session.setMediaSource({ source: XRMediaSource.STREAM, stream });
+        await session.setMediaSource({
+          source: XRMediaSource.STREAM,
+          stream,
+          sourceKind: "image",
+        });
         onSourceSelected?.({
           id: "configured",
           kind: "image",
@@ -105,7 +188,10 @@ export const MediaSourceBinder = ({
       await session.start();
     };
 
-    init();
+    // The SDK writes a startup failure (a refused camera) to the session store,
+    // which paints CameraError, then rethrows. The catch only keeps the rethrow
+    // from surfacing as an unhandled rejection; it must never bind a fallback.
+    void init().catch(() => {});
 
     return () => {
       cancelled = true;
@@ -143,37 +229,38 @@ const Loading = ({ shouldFadeOut }: { shouldFadeOut: boolean }) => (
 const CameraError = () => {
   const xrError = useXRError();
   return (
-  <div className="flex w-full h-full flex-col items-center justify-center gap-4 bg-[var(--color-bg-app)] text-[var(--color-fg-app)] px-8 text-center">
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.5}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-12 w-12 text-[var(--color-fg-muted)]"
-      aria-hidden="true"
-    >
-      <path d="M2 2l20 20" />
-      <path d="M15 7h2a2 2 0 0 1 2 2v2m-2 6H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h2" />
-      <path d="M9.5 9.5a3 3 0 0 0 4.2 4.2" />
-    </svg>
-    <div className="flex flex-col items-center gap-1">
-      <div className="text-base font-medium tracking-wide">
-        Camera unavailable
-      </div>
-      <div className="text-sm text-[var(--color-fg-muted)] max-w-xs">
-        {xrError?.message ||
-          "Allow camera access in your browser, then refresh the page."}
+    <div className="flex w-full h-full flex-col items-center justify-center gap-4 bg-[var(--color-bg-app)] text-[var(--color-fg-app)] px-8 text-center">
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="h-12 w-12 text-[var(--color-fg-muted)]"
+        aria-hidden="true"
+      >
+        <path d="M2 2l20 20" />
+        <path d="M15 7h2a2 2 0 0 1 2 2v2m-2 6H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h2" />
+        <path d="M9.5 9.5a3 3 0 0 0 4.2 4.2" />
+      </svg>
+      <div className="flex flex-col items-center gap-1">
+        <div className="text-base font-medium tracking-wide">
+          Camera unavailable
+        </div>
+        <div className="text-sm text-[var(--color-fg-muted)] max-w-xs">
+          {xrError?.message ||
+            "Allow camera access in your browser, then refresh the page."}
+        </div>
       </div>
     </div>
-  </div>
   );
 };
 
 export const Shell = () => {
   const ready = useXRReady();
-  const reason = useXRError()?.reason;
+  const xrError = useXRError();
+  const reason = xrError?.reason;
   const { session } = useXRContext();
 
   // The app owns the selected source; the switcher only renders it. That is what
@@ -212,11 +299,16 @@ export const Shell = () => {
           return;
         }
         if (!next.url) return;
+        const sourceKind = next.kind === "image" ? "image" : "video";
         const stream =
-          next.kind === "image"
+          sourceKind === "image"
             ? await streamFromImageUrl(next.url)
             : (await streamFromVideoUrl(next.url)).stream;
-        await session.setMediaSource({ source: XRMediaSource.STREAM, stream });
+        await session.setMediaSource({
+          source: XRMediaSource.STREAM,
+          stream,
+          sourceKind,
+        });
       };
       // The SDK rethrows after writing the failure to the session store, so the
       // error screen paints from that store either way and this catch is only
@@ -246,6 +338,14 @@ export const Shell = () => {
   // `<XRProvider>`, which is what makes the read possible at all.
   useEffect(() => {
     reportSession({ ready, reason });
+  }, [ready, reason]);
+
+  // THE PUBLIC STATUS, beside the private one. Same inputs, a different reader:
+  // the page embedding this experience, which has no beacon to ask. Written to
+  // `<html data-experience>`, dispatched on `window`, and posted to the parent
+  // when framed. See experienceStatus.ts for the shape a host awaits.
+  useEffect(() => {
+    publishExperienceStatus(deriveExperienceStatus(ready, reason), reason);
   }, [ready, reason]);
 
   // THE CONSOLE'S CHANNEL, framed only.
@@ -286,7 +386,7 @@ export const Shell = () => {
   }, [applySource]);
 
   return (
-    <AspectRatioContainer>
+    <FrameContainer>
       <XRScene
         loadingComponent={<Loading shouldFadeOut={ready} />}
         errorComponent={<CameraError />}
@@ -298,7 +398,7 @@ export const Shell = () => {
         // A later path needing `preserveDrawingBuffer` (a screenshot, an
         // annotation capture) merges into `canvasProps.gl` rather than replacing
         // `canvasProps`, which would drop the freeze.
-        canvasProps={{ frameloop: paused ? "never" : "always" }}
+        canvasProps={{ frameloop: paused ? "never" : "always", ...RECORD_CANVAS }}
       >
         <MediaSourceBinder onSourceSelected={setSelected} />
         <PerspectiveCamera makeDefault position={[0, 0, 5]} fov={45} />
@@ -313,12 +413,18 @@ export const Shell = () => {
         <PreviewAnchors />
       </XRScene>
       <MediaSourceControl value={selected} onChange={applySource} />
-    </AspectRatioContainer>
+      {RECORD.enabled ? <CaptureControls audio={RECORD.audio} /> : null}
+      {MobileXRAcceptanceHarness ? (
+        <Suspense fallback={null}>
+          <MobileXRAcceptanceHarness ready={ready} error={xrError?.message} />
+        </Suspense>
+      ) : null}
+    </FrameContainer>
   );
 };
 
 const App = () => (
-  <XRProvider>
+  <XRProvider quality={RECORD.enabled ? false : undefined}>
     <Shell />
   </XRProvider>
 );

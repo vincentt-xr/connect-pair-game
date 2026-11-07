@@ -42,6 +42,7 @@ const { setMediaSource, start, SESSION } = vi.hoisted(() => {
 });
 
 vi.mock("@vincentt-xr/sdk/low-level", () => ({
+  useXRPipelineSnapshot: () => [],
   useXRContext: () => SESSION,
   useXRReady: () => true,
   useXRError: () => undefined,
@@ -77,7 +78,9 @@ vi.mock("./MediaSourceControl", () => ({ MediaSourceControl: () => null }));
 // Applying a source is faked at the stream layer so no clip is fetched. The
 // ordering log is written HERE, at the moment the app actually applies.
 vi.mock("./mediaStream", () => ({
-  streamFromImageUrl: vi.fn(async () => ({ id: "img" }) as unknown as MediaStream),
+  streamFromImageUrl: vi.fn(
+    async () => ({ id: "img" }) as unknown as MediaStream,
+  ),
   streamFromVideoUrl: vi.fn(async () => ({
     stream: { id: "vid" } as unknown as MediaStream,
     stop: () => undefined,
@@ -86,7 +89,9 @@ vi.mock("./mediaStream", () => ({
 
 /** The `canvasProps` handed to the SDK on the most recent render. */
 const currentCanvasProps = () =>
-  sceneProps[sceneProps.length - 1]?.canvasProps as { frameloop?: string } | undefined;
+  sceneProps[sceneProps.length - 1]?.canvasProps as
+    | { frameloop?: string }
+    | undefined;
 
 const currentFrameloop = () => currentCanvasProps()?.frameloop;
 
@@ -109,8 +114,10 @@ async function mountFramed() {
 
   const result = render(<Shell />);
   // The channel opens behind a dynamic import of the SDK's preset module, so an
-  // immediate send would race the listener's registration.
-  await vi.waitFor(() => expect(parentPostMessage).toHaveBeenCalled());
+  // immediate send would race the listener's registration. Wait for the ANNOUNCE
+  // itself: the shell also posts its public `experience:status` to the parent on
+  // mount (#117), and that lands before the channel is open.
+  await vi.waitFor(() => expect(announce()).toBeDefined());
   return result;
 }
 
@@ -118,9 +125,17 @@ async function mountFramed() {
 async function deliver(data: unknown, origin: string = CONSOLE_ORIGIN) {
   await act(async () => {
     window.dispatchEvent(
-      new MessageEvent("message", { data, origin, source: window.parent as Window }),
+      new MessageEvent("message", {
+        data,
+        origin,
+        source: window.parent as Window,
+      }),
     );
-    await Promise.resolve();
+    // The harness copies the picture in the next frame and only then calls the
+    // app's hold handler, so a hold lands one frame after the command.
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => setTimeout(resolve, 0));
+    });
   });
 }
 
@@ -161,6 +176,11 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  // The harness announces once per page and never releases its latch; every test
+  // here is a fresh page.
+  delete (window as unknown as Record<symbol, unknown>)[
+    Symbol.for("vincentt.harness.announced")
+  ];
 });
 
 describe("QA-F13-G45 · the app holds and releases through canvasProps.frameloop", () => {
@@ -192,8 +212,13 @@ describe("QA-F13-G45 · the app holds and releases through canvasProps.frameloop
     await deliver(holdCommand(true));
 
     const props = sceneProps[sceneProps.length - 1];
-    expect(props.frameloop, "frameloop must not be passed bare to XRScene").toBeUndefined();
-    expect((props.canvasProps as { frameloop?: string }).frameloop).toBe("never");
+    expect(
+      props.frameloop,
+      "frameloop must not be passed bare to XRScene",
+    ).toBeUndefined();
+    expect((props.canvasProps as { frameloop?: string }).frameloop).toBe(
+      "never",
+    );
   });
 
   it("R2 · without the command the frameloop is 'always' and the source is unchanged", async () => {
@@ -218,7 +243,10 @@ describe("QA-F13-G45 · a media command releases the hold, BEFORE applying", () 
     // so this cannot drift from the SDK's real preset list.
     const announced = announce() as { presets?: { id: string }[] };
     const presetId = announced.presets?.[0]?.id;
-    expect(presetId, "the app must announce at least one preset to command").toBeTruthy();
+    expect(
+      presetId,
+      "the app must announce at least one preset to command",
+    ).toBeTruthy();
 
     events.length = 0;
     setMediaSource.mockClear();
@@ -238,10 +266,10 @@ describe("QA-F13-G45 · a media command releases the hold, BEFORE applying", () 
 });
 
 describe("QA-F13-G45 · the announce declares the capability, and the app says nothing else", () => {
-  it("carries `capabilities: ['render-hold']` because the handler is wired", async () => {
+  it("carries `render-hold` because the handler is wired", async () => {
     await mountFramed();
 
-    expect(announce()?.capabilities).toEqual(["render-hold"]);
+    expect(announce()?.capabilities).toEqual(["render-hold", "frame-still"]);
   });
 
   it("the app sends NOTHING back on any path — announce excepted, once", async () => {
@@ -252,12 +280,20 @@ describe("QA-F13-G45 · the announce declares the capability, and the app says n
     // The baseline is the announce fan-out, not 1: the harness posts the SAME
     // announce once per allowed console origin, and only the real parent's origin
     // delivers. What must not grow is the number of posts after commands arrive.
-    const afterAnnounce = parentPostMessage.mock.calls.length;
+    //
+    // `experience:status` is NOT channel traffic and is excluded: it is the
+    // shell's public readiness signal to any embedder (#117), posted on mount and
+    // on a readiness change, never in answer to a console command.
+    const channelPosts = () =>
+      parentPostMessage.mock.calls.filter(
+        (call) => (call[0] as { type?: string })?.type !== "experience:status",
+      );
+    const afterAnnounce = channelPosts().length;
     expect(
-      parentPostMessage.mock.calls.every(
+      channelPosts().every(
         (call) => (call[0] as { type?: string })?.type === "announce",
       ),
-      "the only thing the app may ever post is its announce",
+      "the only thing the app may ever post on the channel is its announce",
     ).toBe(true);
 
     await deliver(holdCommand(true));
@@ -266,11 +302,16 @@ describe("QA-F13-G45 · the announce declares the capability, and the app says n
     await deliver(mediaCommand(announced.presets![0].id));
     // A command from a WRONG origin, and a malformed one, must also stay silent.
     await deliver(holdCommand(true), "https://evil.example");
-    await deliver({ source: "vincentt-console", v: 1, type: "set-render-hold", held: "yes" });
+    await deliver({
+      source: "vincentt-console",
+      v: 1,
+      type: "set-render-hold",
+      held: "yes",
+    });
 
     expect(
-      parentPostMessage.mock.calls.length,
-      "the app must never post anything beyond its single announce",
+      channelPosts().length,
+      "the app must never post anything on the channel beyond its single announce",
     ).toBe(afterAnnounce);
   });
 

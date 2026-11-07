@@ -150,19 +150,37 @@ untouched by the person, and the only trace of what was replaced would be gone.
 
 **This project is already a complete, runnable AR starter.** It previews and builds
 as-is. If you just scaffolded it, your job is not to invent an app — it is to get
-the developer to the point where they can describe what they want.
+the developer onto the platform and to the point where they can describe what they
+want. The platform is the product: the console page, the phone link, the published
+address. A session that leaves the developer with a localhost address, or no
+address, has not started.
 
-- If the developer has **not** told you what to build yet: confirm the project is
-  ready (`pnpm dev` serves; `pnpm build` passes), **start the preview** (`pnpm
-  preview`, in the background), hand over the project's console page, then ask what
-  they want to make. **Do not build a scene or pick an idea for them.** The starter
-  is worth seeing on a phone before there is anything custom in it — it is how the
-  developer learns the loop exists, and it is running by the time they have
-  described the app.
-- Read the SDK reference (`GROUNDING.md`) **when you start building a scene**, not
-  before. There is no need to read the whole API up front just to confirm the
-  starter works.
-- Once they describe the app, then design and build it against `GROUNDING.md`.
+**First, in this order, before anything else — every new session, not only the first:**
+
+1. **Signed in?** `vincentt whoami`. If it fails, run `vincentt login`: it opens the
+   browser, the developer signs in or creates the account there, and the command
+   returns once the machine holds a token. Say that one sentence and wait; do not
+   look for a way round it.
+2. **Bound?** A folder from `vincentt create` already is. A folder from `vincentt init`
+   (no account) is not: run `vincentt create` in it to register the project and
+   reserve its address. A fresh clone binds with `vincentt link <project-id>`
+   (`vincentt projects` lists them).
+3. **Preview running.** `pnpm preview` in the background, then hand over the
+   project's console page, written plainly. That page carries the phone link and
+   the code that scans to it.
+4. **Then** ask what they want to make. **Do not build a scene or pick an idea for
+   them.** The starter is worth seeing on a phone before there is anything custom in
+   it — it is how the developer learns the loop exists, and it is running by the
+   time they have described the app.
+
+`pnpm dev` is for your own checks after step 3, never a substitute for it, and its
+address is never handed over (see the dev loop below). `pnpm build` passing is
+worth confirming, but it is not a step the developer waits on.
+- Read the grounding files **when you start building a scene**, not before — the
+  template's `GROUNDING.md` and the SDK's own at
+  `node_modules/@vincentt-xr/sdk/GROUNDING.md`. There is no need to read the whole
+  API up front just to confirm the starter works.
+- Once they describe the app, then design and build it against both.
 
 ## The dev loop
 
@@ -178,7 +196,30 @@ preview, at an address for someone else's app. Check where you are before the fi
 after anything that could have moved you.
 
 - **`pnpm install`** — install dependencies.
-- **`pnpm dev`** — esbuild dev server on `http://localhost:5173`.
+- **`pnpm dev`** — esbuild dev server on `http://localhost:5173` (answers on both
+  `127.0.0.1` and `[::1]`; `PORT` changes the port). This address is for your own
+  checks. It is never given to the developer: not as a link, not as a fallback, not
+  when a preview fails. A phone reaches the work through `pnpm preview` and nothing
+  else. Dev output goes to `.dev/`, gitignored and separate from `dist/`, so a
+  `pnpm build` while dev is running does not change what the dev page serves.
+- **Develop against a clip instead of the camera** — when there is no webcam, or
+  the browser you are previewing in blocks it (an embedded preview browser does):
+
+  ```
+  VITE_INPUT_SOURCE=video VITE_INPUT_URL=/clip.mp4 pnpm dev
+  ```
+
+  `/clip.mp4` is any file under `public/` (served at the root) or a full URL.
+  `VITE_INPUT_SOURCE=photo` with an image URL gives a single still frame. To stop
+  typing it, put the same two lines in `.env.development` (or `.env`). The app
+  starts on that source and the in-app media switcher still lets you swap. A
+  hidden tab refusing to play the clip is retried until it plays.
+
+  Every `VITE_*` switch is **dev-only**: `pnpm dev` and `pnpm preview` read them,
+  and `pnpm build` (`vincentt build`) never does, whatever file or environment
+  sets them. A published app always starts on the webcam (or, framed, on a sample
+  clip). There is no way to ship a configured clip.
+
 - **`pnpm preview`** — on-device preview. Builds and serves the app behind a secure
   tunnel to Vincentt's own edge, so you get one `https` URL to open on a phone. AR
   needs a secure context for camera access, so this is how you test tracking and
@@ -186,7 +227,89 @@ after anything that could have moved you.
   the CLI. Requires being signed in (`vincentt login`) — the edge address is minted
   per session by the platform.
 - **`pnpm typecheck`** — `tsc --noEmit`.
-- **`pnpm build`** — production bundle to `dist/`.
+- **`pnpm lint`** — lint the platform source with the template's ESLint rules.
+- **`pnpm test`** — run the platform and QA test suites.
+- **`pnpm build`** — runs `vincentt build`: production bundle to `dist/`. Only a
+  production build ever lands there; the dev server writes to `.dev/`. The build
+  clears `dist/` only when every file in it is one it wrote on this machine; it
+  refuses anything else rather than deleting it, so empty a `dist/` it did not
+  write (an older template's build, a hand copy) yourself, once.
+  `vincentt build --self-contained` bundles every package into the app, for
+  hosting it anywhere.
+
+## Page title and share preview
+
+The browser-tab title, the description and the Open Graph / Twitter share card
+come from **`app.config.json`** at the project root — the creator's file. Edit it
+there, never in `index.html`: that file is replaced by a template upgrade, and
+`pnpm build` and `pnpm dev` (at startup — restart dev after editing it) write the
+config's values into its tags. The build refuses a config with an unknown key, a
+wrong type, a `url` that is not `https://`, or an `image` outside the project.
+
+```json
+{
+  "title": "Magnetic Hands",
+  "description": "Push a field of lines around with your hands",
+  "url": "https://magnetic-hands.vincentt.app",
+  "image": "/images/share.jpg",
+  "imageAlt": "A hand bending a field of lines"
+}
+```
+
+Every key is optional. `image` is a root-relative path under `public/` (`/images/…`)
+or a full `https://` URL; with `url` set it is made absolute for crawlers. Add
+`imageWidth` / `imageHeight` / `imageType` when the image is not 1200×630 JPEG.
+A share image should be 1200×630. `vincentt publish` checks these tags on the
+built page; note that once `url` is set the image is an absolute URL, which the
+publish check cannot verify against `dist/`, so check the path yourself.
+
+## Embedding the experience in another page
+
+A published experience can be framed. Two things change inside a frame:
+
+- **The camera.** Framed, the app starts on a sample clip instead of the webcam, so
+  an embed does not open on a permission prompt nobody asked for. The clip follows
+  the scene's trackers: a hand scene opens on a hand clip, a body scene on a body
+  clip, otherwise a face clip (SDK presets carry `tags`; older SDKs get the first
+  clip). To run on the
+  live camera the host must allow it on the frame **and** ask for it, per frame,
+  with `?source=webcam` on the frame's address. `VITE_FRAMED_SOURCE=webcam` does
+  the same for every frame in local dev and preview only; a published app never
+  reads it, so tell a host that embeds a camera experience to add
+  `?source=webcam`.
+- **Capture controls.** `?record` on the app's address (framed or not) adds the
+  camera UI: tap the shutter for a photo, hold to record, release to stop;
+  `?record=audio` records the microphone too. Each capture saves to the device
+  at once, at the screen's resolution (record mode pins the pixel ratio and
+  turns adaptive quality off). The plain address shows the creator's
+  experience exactly as built, so nothing in `Scene.tsx` has to change for it.
+
+  ```html
+  <iframe
+    src="https://my-app.vincentt.app/"
+    allow="camera"
+    allowfullscreen
+    style="border:0;width:100%;aspect-ratio:9/16"
+  ></iframe>
+  ```
+
+- **Knowing when it is usable.** The app publishes `loading` → `ready` (or `error`)
+  on three surfaces: `<html data-experience="…">`, a `window` event
+  `experience:status`, and a message to the parent page. A host awaits it like
+  this:
+
+  ```js
+  window.addEventListener("message", (e) => {
+    if (e.source !== frame.contentWindow) return; // only our frame
+    if (e.data?.type !== "experience:status") return;
+    // e.data.status: "loading" | "ready" | "error"; e.data.reason on error
+    if (e.data.status === "ready") placeholder.hidden = true;
+  });
+  ```
+
+  The message is posted with target origin `*` because it carries nothing but the
+  status word and, on error, the SDK's reason code; a host should still check
+  `e.source`. Inside the experience, script can listen to the window event instead.
 
 ## Platform commands (`vincentt`)
 
@@ -258,15 +381,20 @@ holding.
   binds the folder to the project.
 - **`3` — delivered, not registered.** This invocation wrote the project source, but no address
   was reserved: there is no account on this machine and no browser to get one, which is the
-  ordinary situation in an agent's shell. **The project is complete and the local dev loop
-  already runs** — install, `run dev`, and preview all work with no account at all. Only the
-  public address is deferred. Report the project as built. Do not re-run `create` to "fix" this,
-  and do not treat it as a failed build; the remedy is `vincentt login` on a machine with a
-  browser, and it is optional.
+  ordinary situation in an agent's shell. **The project is complete** — the source is on disk
+  and builds. What it does not have yet is an address, and with it a preview and a console page.
+  Report the project as built. Do not re-run `create` to "fix" this, and do not treat it as a
+  failed build; the remedy is `vincentt login` on a machine with a browser, then the same
+  `create` again. Signing in is what makes the project viewable.
 - **`1` — nothing lasting was produced.** The command refused and no address was reserved. This
   covers sign-in started then abandoned, the address already being taken, no workspace resolving,
   and a missing name. Each of these is fixable with something you can type right now: a different
   `--name`, a chosen workspace, the missing flag, or completing the sign-in.
+- **`4` — not signed in.** The folder already held an app, so this invocation wrote no source,
+  and there is no account on this machine and no terminal to sign in from. No address was
+  reserved. This is the same code every other verb returns when it needs an account. The remedy
+  is `vincentt login` at a terminal with a browser, then the same `create` again; the CLI prints
+  both.
 
 The distinction that matters: **`3` means you have a working project and `1` means you do not.**
 A run that already scaffolded the source never reports `1` for want of an account.
@@ -312,7 +440,7 @@ holds in all three cases below.
 reported only if it still holds that project's binding when the listing runs, so a path that no
 longer holds it is never handed to you. Everything after that is authorized the same way it always
 is — the folder is a shortcut to the right directory, not permission to be in it. And it is where
-the project *was* worked, not where it *must* be worked: if the developer names a different place,
+the project _was_ worked, not where it _must_ be worked: if the developer names a different place,
 that place is right and the listing is stale.
 
 `pnpm preview` (above) is the one loop step that is not a `vincentt` verb — run it in the
@@ -324,9 +452,14 @@ from you: it carries the phone link and its QR, it is where they watch the devic
 what they send to anyone else. The phone URL is already on that page, so repeating it in the
 reply gives the developer two addresses to choose between at the moment they want one.
 
+**Never hand over a localhost address.** It reaches nobody but this machine, and the console
+page is what the developer opens. If `pnpm preview` refuses because this machine is not signed
+in, ask the developer to sign in (`vincentt login`) and run it again. Do not start `pnpm dev` and
+offer its address instead.
+
 **Say it opens here, not on the phone.** It is a desktop page: it carries the QR the phone
 scans, the phone link, and the live device view. "Open this on your phone" points the developer
-at the wrong screen — the phone is reached *from* this page, by scanning it.
+at the wrong screen — the phone is reached _from_ this page, by scanning it.
 
 **Put it in the reply as a bare URL on its own line — no backticks, no code fence, no
 `Console:` label.** A URL in code formatting renders as something to copy; a bare one renders
@@ -349,8 +482,8 @@ from the console, from another terminal, or by closing the one it was running in
 - `✓ Preview stopped. The link no longer works.` — someone stopped it on this account. Say so
   and stop there. **This is the common case and it is not an error**: the developer chose it,
   often from the console page you just handed them.
-- `✓ Preview stopped — 12-hour maximum reached.` — it ran its full life. Say so.
-- `✗ Preview ended — …` — something went wrong; relay the line as printed.
+- `✓ Preview stopped. 12-hour maximum reached.` — it ran its full life. Say so.
+- `✗ Preview ended. …` — something went wrong; relay the line as printed.
 
 **Starting a new preview because the old one ended is the wrong move**, even when the developer
 has not said anything since. It overrides a deliberate stop, it mints a new link so every phone
@@ -374,12 +507,12 @@ backwards here, and acting on it is expensive.
 
 ### How it exits
 
-| Exit | What happened | What to do |
-|---|---|---|
-| **0** | One or more annotations were printed, one JSON object per line on stdout. | Read them and take up the work. |
+| Exit   | What happened                                                                           | What to do                                                             |
+| ------ | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **0**  | One or more annotations were printed, one JSON object per line on stdout.               | Read them and take up the work.                                        |
 | **64** | The window passed with nothing waiting. Nothing was printed. The preview is still live. | Run the same command again. Nothing was missed and nothing is re-read. |
-| **65** | The preview ended. Nothing more can arrive on it. | A preview has to be running before there is anything to wait on. |
-| **1** | A usage error or a fault. The reason is on stderr. | Read stderr. |
+| **65** | The preview ended. Nothing more can arrive on it.                                       | A preview has to be running before there is anything to wait on.       |
+| **1**  | A usage error or a fault. The reason is on stderr.                                      | Read stderr.                                                           |
 
 `--timeout <seconds>` sets the window (default 300).
 
@@ -414,6 +547,11 @@ preview is running again.
 - **Any new file you create under `src/`** — utility hooks, sub-components, asset
   imports. Organize freely.
 - **`package.json` dependencies** — add a dependency, then `pnpm install` it yourself.
+- **`frame` in `src/frame.config.ts`** — `"phone"` (default) is the 9:16 frame,
+  pillarboxed on wide screens; `"full"` makes the canvas the whole viewport on
+  every device, which suits a desktop webcam. Set it only when the creator asks
+  for fullscreen; tracking stays aligned either way. It is the only place the
+  frame is set; `app.config.json` has no key for it.
 
 ## What to leave alone
 
@@ -423,6 +561,8 @@ requires it, and know why).
 
 - **`src/App.tsx`** — the runtime shell: XR session start, media-source binding,
   camera, lighting, scene mount.
+- **`src/FrameContainer.tsx`**, **`src/CaptureControls.tsx`**, **`src/captureSave.ts`**
+  — the frame and the `?record` camera UI (shutter, REC chip, save to device).
 - **`src/main.tsx`** — the mount.
 - **`src/capture.ts`** — capture + share primitives (`usePhotoCapture`,
   `useVideoCapture`, `saveToDevice`, `shareMedia`).
@@ -437,27 +577,63 @@ requires it, and know why).
 The helper APIs (`capture`, `overlay`, `sprite`, `gesture`) are documented in
 `GROUNDING.md` — import and use them, don't re-implement them.
 
-## The SDK API lives in GROUNDING.md
+## Storing visitor data
 
-`GROUNDING.md` (repo root) is the authoritative reference for every SDK component,
-hook, and prop you may use (`<FaceTracker>`, `<HandTracker>`, `<TrackingAnchor>`,
-screen-space layout, `<TextLabel>`, `<Panel>`, the capture/overlay/sprite helpers, and
-the common patterns). Read it when you begin a scene (not before), and use the
-components and props it documents; don't invent props.
+A published app lives at `<slug>.vincentt.app`, next to other creators' apps. Browsers let any
+of those apps set a cookie for the whole `vincentt.app` domain, which every other app then
+receives. So:
 
-Imports:
+- **Keep visitor state in `localStorage` or `sessionStorage`.** Those are per app; no other app
+  can read or change them.
+- **If the app must set a cookie, name it with the `__Host-` prefix** and set it with `Secure;
+Path=/` and no `Domain`, for example
+  `document.cookie = "__Host-session=…; Secure; Path=/; SameSite=Lax"`. Another app cannot set
+  or overwrite a `__Host-` cookie, so read only `__Host-` names. Never set
+  `Domain=vincentt.app`.
+- **An app with real visitor sign-in belongs on its own custom domain**, which isolates it
+  completely. Tell the person so when they ask for accounts or logins.
 
-- Core components and hooks come from **`@vincentt-xr/sdk`**.
+## The SDK API lives in the SDK's own grounding
+
+There are **two** grounding files, and nothing merges them:
+
+- **`GROUNDING.md`** (repo root) documents this template's local helpers —
+  capture, overlay, sprite, gesture — plus project notes, patterns, a condensed
+  tracking summary and publishing.
+- **`node_modules/@vincentt-xr/sdk/GROUNDING.md`** is the authoritative reference
+  for every SDK component, hook, and prop (`<FaceTracker>`, `<HandTracker>`,
+  `<TrackingAnchor>`, screen-space layout, `<ScreenText>`, `<Panel>`). It is much
+  the larger of the two.
+
+Read both when you begin a scene (not before), and use the components and props
+they document; don't invent props. Longer-form SDK guides and examples ship beside
+it in `node_modules/@vincentt-xr/sdk/docs/`.
+
+Imports — the SDK is split into task-domain doors, and a symbol imported from the
+wrong one fails with "no exported member":
+
+- Core components and hooks come from **`@vincentt-xr/sdk`** — including the runtime
+  renderers (`Transform3D`, `MeshRenderer`), `SpriteAnimation`, and the capture
+  hooks (`useFrameCapture`, `useMediaRecorder`).
 - **Trackers** (`FaceTracker`, `HandTracker`, `BodyTracker`, `GestureTracker`,
-  `GestureTrigger`, `TrackingAnchor`, `FaceMesh`) come from **`@vincentt-xr/sdk/tracking`**
-  — not core. Importing them from `@vincentt-xr/sdk` fails with "no exported member".
+  `GestureTrigger`, `TrackingAnchor`, `FaceMesh`, `Segmentation`) come from
+  **`@vincentt-xr/sdk/tracking`** — not core.
+  The starting scene runs **face tracking only; hands are off by default**. To add
+  hands, add `import { HandBoundingBox } from "./HandBoundingBox";` and
+  `<HandBoundingBox />` to `src/Scene.tsx`. Add a tracker only when the scene needs it:
+  each one adds its own model download (the hand model is ~7.8 MB) and its own wasm
+  compile on the phone.
+- **Face deep config** (FaceMesh materials, retouch, head-binding) comes from
+  **`@vincentt-xr/sdk/face-effects`**.
+- **Scene-object authoring state** (types, factories, store operations, render
+  groups) comes from **`@vincentt-xr/sdk/scene-object`**.
 - The low-level XR context hooks (`useXRContext`, `useXRReady`, `useXRError`) come from
   **`@vincentt-xr/sdk/low-level`**.
 
-`GROUNDING.md` shows the exact import for each API. You *can* read `node_modules`, but
-prefer `GROUNDING.md` — the published `.d.ts` types can lag or omit props, and the
-bundle is minified. If something you need isn't in `GROUNDING.md` and isn't clearly in
-the types, ask rather than guessing a prop into existence.
+The SDK grounding shows the exact import for each API. You _can_ read the `.d.ts`
+files, but prefer the grounding — the published types can lag or omit props, and the
+bundle is minified. If something you need isn't in either grounding and isn't clearly
+in the types, ask rather than guessing a prop into existence.
 
 ## Assets
 
@@ -502,6 +678,82 @@ The library is a convenience, never a dependency. It holds **props and frames** 
 no wearables or face-filter assets, so a query for those correctly returns nothing. If a
 search comes back empty or the platform is unreachable, say so and fall back to local
 files under `public/`; the project still builds, previews, and publishes either way.
+
+### Bringing in files from outside the library
+
+The developer may want a specific 3D model, image, or piece of UI that the library does not hold:
+a model from Sketchfab, a screen designed in Figma or Canva, a logo they own. If a connector for
+that source is set up, use it; if not, ask the developer to download the file and put it where
+this section says. The rules are the same either way. Recommended connectors and how to set them
+up: https://vincentt.studio/connectors
+
+**Where the file goes.** Save it under `public/assets/<source>/`, named for what it is:
+`public/assets/sketchfab/fox.glb`, `public/assets/figma/start-button.webp`,
+`public/assets/brand/logo.png`. Reference it from the root: `useGLTF("/assets/sketchfab/fox.glb")`,
+`<img src="/assets/brand/logo.png">`. Never use a name that starts with a dot; publish refuses
+hidden files.
+
+**Formats.**
+
+- **Models: GLB, one file.** A `.gltf` that comes with a separate `.bin` and texture files breaks
+  when imported, because the build copies only the `.gltf`. Convert it to GLB, or keep the whole
+  folder under `public/` and load it by path.
+- **USDZ** is only for `ProductViewer`'s `iosSrc`. It must live under `public/`; the build cannot
+  import it.
+- **Images and UI exports: WebP**, or PNG where you need transparency over the camera. Export
+  from design tools at the size the screen needs, not at 3x.
+- **No transparent video as an overlay.** Use a WebP or PNG sprite sheet instead.
+
+**What a phone can carry.** Every file downloads to the viewer's phone, often over mobile data,
+on top of the tracking models (the face model alone is 3.8 MB).
+
+- **One model: aim for 5 MB or less. Over 10 MB is too heavy**, and `vincentt publish` warns
+  about it.
+- **Images and textures: at most 2048 px on the long side**, 1024 px for small props.
+  `vincentt publish` warns about any image over 2048 px.
+- **Compress models on this machine before referencing them**, with meshopt geometry and WebP
+  textures:
+
+  ```
+  pnpm dlx @gltf-transform/cli optimize in.glb public/assets/sketchfab/fox.glb --compress meshopt --texture-compress webp --texture-size 2048
+  ```
+
+  Do not use Draco or KTX2. A Draco model makes every viewer's phone download a decoder from
+  Google's servers, and the loader here does not decode KTX2 textures. Load outside models with
+  `useGLTF` (or the SDK's `MeshRenderer` with `assetUrl`). `defineGltfAsset` cannot read a
+  compressed model.
+
+- Load only what the first scene needs; defer the rest (see `GROUNDING.md`, "Assets", "Assets and
+  frame-loop performance").
+
+**Record where it came from.** Before using an outside file, find its licence. Add one row per
+file to `CREDITS.md` at the repo root, creating the file with this header if it does not exist:
+
+```markdown
+# Credits
+
+| File                            | Title        | Author   | Source                              | Licence   | Fetched    | Credit text                           |
+| ------------------------------- | ------------ | -------- | ----------------------------------- | --------- | ---------- | ------------------------------------- |
+| public/assets/sketchfab/fox.glb | Low Poly Fox | Jane Doe | https://sketchfab.com/3d-models/... | CC BY 4.0 | 2026-10-14 | "Low Poly Fox" by Jane Doe, CC BY 4.0 |
+```
+
+Write the licence exactly as the source states it. Files the developer made or owns go in too,
+with `Own work` as the licence, so every outside-looking file has an answer.
+
+**What the licence asks of the experience.**
+
+- **The licence requires attribution** (every CC BY variant, and most "free with credit" terms):
+  show the credit text inside the experience, somewhere a viewer can reach, such as a small
+  "Credits" line on the start or end screen, or a credits panel built with `<Overlay>`.
+- **Non-commercial** (CC BY-NC and its variants): stop and ask the developer whether this project
+  is commercial before using it. A brand campaign is commercial.
+- **No derivatives** (CC BY-ND and its variants): tell the developer before you modify the file.
+  Compressing it may count as a modification.
+- **No licence you can find:** do not use the file. Say so and offer an alternative.
+
+**Keys.** A connector's API key belongs in the connector's own settings, outside this project.
+Never put it in the repo, in `.env`, or in any variable the build bakes into the app; anything
+the build reads can end up in the published files.
 
 ## Communicating
 

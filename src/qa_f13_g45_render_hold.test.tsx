@@ -58,6 +58,7 @@ const { setMediaSource, start, SESSION } = vi.hoisted(() => {
 });
 
 vi.mock("@vincentt-xr/sdk/low-level", () => ({
+  useXRPipelineSnapshot: () => [],
   useXRContext: () => SESSION,
   useXRReady: () => true,
   useXRError: () => undefined,
@@ -90,7 +91,9 @@ vi.mock("./MediaSourceControl", () => ({ MediaSourceControl: () => null }));
 // Faked at the stream layer so no clip is fetched. The ordering log is written at
 // the moment the app actually applies.
 vi.mock("./mediaStream", () => ({
-  streamFromImageUrl: vi.fn(async () => ({ id: "img" }) as unknown as MediaStream),
+  streamFromImageUrl: vi.fn(
+    async () => ({ id: "img" }) as unknown as MediaStream,
+  ),
   streamFromVideoUrl: vi.fn(async () => ({
     stream: { id: "vid" } as unknown as MediaStream,
     stop: () => undefined,
@@ -121,8 +124,10 @@ async function mountFramed() {
 
   const result = render(<Shell />);
   // The channel opens behind a dynamic import of the SDK's preset module, so an
-  // immediate send would race the listener's registration.
-  await vi.waitFor(() => expect(parentPostMessage).toHaveBeenCalled());
+  // immediate send would race the listener's registration. Wait for the ANNOUNCE
+  // itself: the shell also posts its public `experience:status` to the parent on
+  // mount (#117), and that lands before the channel is open.
+  await vi.waitFor(() => expect(announce()).toBeDefined());
   return result;
 }
 
@@ -130,9 +135,17 @@ async function mountFramed() {
 async function deliver(data: unknown, origin: string = CONSOLE_ORIGIN) {
   await act(async () => {
     window.dispatchEvent(
-      new MessageEvent("message", { data, origin, source: window.parent as Window }),
+      new MessageEvent("message", {
+        data,
+        origin,
+        source: window.parent as Window,
+      }),
     );
-    await Promise.resolve();
+    // The harness copies the picture in the next frame and only then calls the
+    // app's hold handler, so a hold lands one frame after the command.
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => setTimeout(resolve, 0));
+    });
   });
 }
 
@@ -153,7 +166,14 @@ const mediaCommand = (presetId: string) => ({
 /** The announce the app actually posted, read off the recording parent. */
 const announce = () =>
   parentPostMessage.mock.calls
-    .map((call) => call[0] as { type?: string; capabilities?: unknown; presets?: { id: string }[] })
+    .map(
+      (call) =>
+        call[0] as {
+          type?: string;
+          capabilities?: unknown;
+          presets?: { id: string }[];
+        },
+    )
     .find((message) => message?.type === "announce");
 
 beforeEach(() => {
@@ -173,6 +193,11 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  // The harness announces once per page and never releases its latch; every test
+  // here is a fresh page.
+  delete (window as unknown as Record<symbol, unknown>)[
+    Symbol.for("vincentt.harness.announced")
+  ];
 });
 
 describe("QA-F13-G45 · the freeze travels in `canvasProps`, and both directions work", () => {
@@ -225,7 +250,9 @@ describe("QA-F13-G45 · the freeze travels in `canvasProps`, and both directions
       "`frameloop` was passed BARE to <XRScene>, where it does not exist — the SDK " +
         "would drop it and the app would never freeze",
     ).toBeUndefined();
-    expect((props.canvasProps as { frameloop?: string }).frameloop).toBe("never");
+    expect((props.canvasProps as { frameloop?: string }).frameloop).toBe(
+      "never",
+    );
   });
 
   it("the SDK's own `canvasProps` keys are not clobbered by the freeze", async () => {
@@ -266,7 +293,10 @@ describe("QA-F13-G45 · a media command clears the hold BEFORE applying the sour
     // it cannot drift from the SDK's real preset list.
     const announced = announce();
     const presetId = announced?.presets?.[0]?.id;
-    expect(presetId, "the app must announce at least one preset to command").toBeTruthy();
+    expect(
+      presetId,
+      "the app must announce at least one preset to command",
+    ).toBeTruthy();
 
     events.length = 0;
     setMediaSource.mockClear();
@@ -311,7 +341,7 @@ describe("QA-F13-G45 · a media command clears the hold BEFORE applying the sour
 });
 
 describe("QA-F13-G45 · the capability is emitted ONLY when the handler is wired", () => {
-  it("the app's announce carries `capabilities: ['render-hold']`", async () => {
+  it("the app's announce carries `render-hold`", async () => {
     // `D-the-capability-is-derived-from-the-handler`. The console TRUSTS this
     // self-declaration and CANNOT detect a false one — there is no ack, by design —
     // so the only place a false declaration is preventable is structurally, here.
@@ -321,7 +351,7 @@ describe("QA-F13-G45 · the capability is emitted ONLY when the handler is wired
       announce()?.capabilities,
       "the app wired a hold handler and did not declare the capability, so the console " +
         "renders no control for an app that can freeze",
-    ).toEqual(["render-hold"]);
+    ).toEqual(["render-hold", "frame-still"]);
   });
 
   it("the declaration is DERIVED from the wiring — the harness cannot be told otherwise", async () => {
@@ -345,23 +375,30 @@ describe("QA-F13-G45 · the capability is emitted ONLY when the handler is wired
         "be derived from anything, and this arm is asserting nothing",
     ).toBe("function");
 
-    const presets = [{ id: "clip-1", label: "A clip", kind: "video" as const, mirrored: false }];
+    const presets = [
+      {
+        id: "clip-1",
+        label: "A clip",
+        kind: "video" as const,
+        mirrored: false,
+      },
+    ];
 
-    const withHandler = buildAnnounce(presets, { onSetRenderHold: () => undefined });
+    const withHandler = buildAnnounce(presets, {
+      onSetRenderHold: () => undefined,
+    });
     const withoutHandler = buildAnnounce(presets);
 
     expect(
       withHandler.capabilities,
       "supplying a handler did not produce the declaration — an app could then implement " +
         "a hold the console never offers",
-    ).toEqual(["render-hold"]);
+    ).toContain("render-hold");
     expect(
-      Object.prototype.hasOwnProperty.call(withoutHandler, "capabilities"),
-      "an app with NO handler emitted the key — that is a live button that does nothing, " +
-        "the present-but-dead failure the console cannot detect. An old harness OMITS " +
-        "the key, and emitting `[]` would hand the console a second shape meaning the " +
-        "same thing.",
-    ).toBe(false);
+      withoutHandler.capabilities ?? [],
+      "an app with NO handler declared `render-hold` — that is a live button that does " +
+        "nothing, the present-but-dead failure the console cannot detect.",
+    ).not.toContain("render-hold");
   });
 });
 
@@ -372,12 +409,22 @@ describe("QA-F13-G45 · the app sends NOTHING back, on any path", () => {
 
     // The baseline is the announce FAN-OUT (one post per allowed console origin),
     // not 1: only the real parent's origin delivers, and the others go nowhere.
-    const afterAnnounce = parentPostMessage.mock.calls.length;
+    //
+    // `experience:status` is NOT channel traffic and is excluded: it is the
+    // shell's public readiness signal to any embedder (#117), posted on mount
+    // and on a readiness change, never in response to a console command. The
+    // pin here is about the CHANNEL — no ack, no error, no report — so the
+    // count below must not move when a command arrives.
+    const channelPosts = () =>
+      parentPostMessage.mock.calls.filter(
+        (call) => (call[0] as { type?: string })?.type !== "experience:status",
+      );
+    const afterAnnounce = channelPosts().length;
     expect(
-      parentPostMessage.mock.calls.every(
+      channelPosts().every(
         (call) => (call[0] as { type?: string })?.type === "announce",
       ),
-      "the only thing the app may ever post is its announce",
+      "the only thing the app may ever post on the channel is its announce",
     ).toBe(true);
 
     await deliver(holdCommand(true));
@@ -386,14 +433,26 @@ describe("QA-F13-G45 · the app sends NOTHING back, on any path", () => {
     // And on the REFUSED paths too — a refusal is not an error to report, because
     // there is no channel to report it on.
     await deliver(holdCommand(true), FOREIGN_ORIGIN);
-    await deliver({ source: "vincentt-console", v: 1, type: "set-render-hold", held: "yes" });
+    await deliver({
+      source: "vincentt-console",
+      v: 1,
+      type: "set-render-hold",
+      held: "yes",
+    });
     await deliver({ source: "vincentt-console", v: 1, type: "ack" });
 
     expect(
-      parentPostMessage.mock.calls.length,
+      channelPosts().length,
       "the app posted something after a command arrived. An ack for `set-render-hold` " +
         "is the B-F13-3 breach — capability crosses, observation does not.",
     ).toBe(afterAnnounce);
+    // And the public signal did not fire either: no command changes readiness.
+    expect(
+      parentPostMessage.mock.calls.filter(
+        (call) => (call[0] as { type?: string })?.type === "experience:status",
+      ).length,
+      "a console command must not re-post the experience status",
+    ).toBe(1);
   });
 
   it("a hold from a DISALLOWED origin does not freeze the app", async () => {
@@ -411,7 +470,12 @@ describe("QA-F13-G45 · the app sends NOTHING back, on any path", () => {
   it("a malformed `held` does not freeze the app", async () => {
     await mountFramed();
 
-    await deliver({ source: "vincentt-console", v: 1, type: "set-render-hold", held: "yes" });
+    await deliver({
+      source: "vincentt-console",
+      v: 1,
+      type: "set-render-hold",
+      held: "yes",
+    });
 
     expect(currentFrameloop()).toBe("always");
   });

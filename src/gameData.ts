@@ -14,7 +14,19 @@ export type TokenShape = (typeof TOKEN_SHAPES)[number];
 
 export type GameLevel = { id: string; tokens: readonly PairTokenData[] };
 const palette = [["#ff3e5f", "Coral"], ["#ffc72c", "Gold"], ["#1f9eff", "Blue"], ["#9d63ff", "Violet"], ["#40d989", "Mint"], ["#ff8b35", "Orange"], ["#f45cd5", "Pink"]] as const;
-const rng = (seed: number) => () => { let n = (seed += 0x6d2b79f5); n = Math.imul(n ^ (n >>> 15), n | 1); n ^= n + Math.imul(n ^ (n >>> 7), n | 61); return ((n ^ (n >>> 14)) >>> 0) / 4294967296; };
+// mulberry32: a seeded PRNG so every level lays out the same way each time; bit operations are the algorithm.
+/* eslint-disable no-bitwise */
+const rng = (seed: number) => {
+  let state = seed;
+  return () => {
+    state += 0x6d2b79f5;
+    let n = state;
+    n = Math.imul(n ^ (n >>> 15), n | 1);
+    n ^= n + Math.imul(n ^ (n >>> 7), n | 61);
+    return ((n ^ (n >>> 14)) >>> 0) / 4294967296;
+  };
+};
+/* eslint-enable no-bitwise */
 
 export const createLevel = (levelNumber: number): GameLevel => {
   const pairCount = Math.min(7, 3 + Math.floor((levelNumber - 1) / 3)); const next = rng(levelNumber * 7919); const positions: BoardPoint[] = [];

@@ -5,14 +5,24 @@ name: Smoke Build
 #
 # Catches any template change that breaks the production build, and — via the frozen
 # lockfile — a dependency bump that wasn't reflected in the lockfile.
+#
+# TWO JOBS, BECAUSE THIS FILE SHIPS INTO EVERY SCAFFOLDED PROJECT
+# (vincentt-xr/v2-template#116). `smoke` is the creator's CI too: install, build,
+# typecheck, lint, test, and the zone manifest's floor. `contract` is the
+# template's own: the agent-contract and pointer checks, the generated sections,
+# and the manifest's completeness rule — true only of the template, and false by
+# construction of any project that has added a file. It runs only in this repo.
+# A creator never edits this file to get a green build.
 
 on:
   pull_request:
     branches:
       - main
+      - 'hotfix/**'
   push:
     branches:
       - main
+      - 'hotfix/**'
   workflow_dispatch:
 
 jobs:
@@ -22,10 +32,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # No version input: the action reads package.json's packageManager pin.
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -36,11 +45,50 @@ jobs:
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
+      # `pnpm build` is `vincentt build`. The CLI is build tooling, which the
+      # project never depends on, so CI installs it the way a creator does.
+      - name: Install the Vincentt CLI
+        run: npm install --global @vincentt-xr/cli@0.28.0-next.1
+
       - name: Build
         run: pnpm build
 
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      # The zone manifest decides which files a template upgrade may overwrite in a
+      # creator's repository, so its floor (what an entry may NAME) is checked in
+      # the creator's repo as well as here. Only the template is `--strict`: there,
+      # every src/* file must be classified exactly once; in a creator's repo an
+      # unlisted src/* file is the creator's own, and that is the normal case.
+      # The same check runs at the tag (release.yml, strict): a check that does not
+      # run at the tag does not protect the artifact. Fetch depth is full so the
+      # own-commit check can read the manifest's history.
+      - name: Fetch history for the manifest own-commit check
+        run: git fetch --unshallow || true
+
+      - name: The zone manifest passes the floor (complete, in the template repo)
+        run: node scripts/check-zone-manifest.mjs ${{ github.repository == 'vincentt-xr/v2-template' && '--strict' || '' }}
+
+  contract:
+    # Template-maintainer checks. See the header: these are true of the template
+    # and of nothing scaffolded from it.
+    if: github.repository == 'vincentt-xr/v2-template'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       # A host's conventional filename may exist only as a POINTER (B-F3-5
       # tripwire c). A pointer that has grown content is a second contract, and
@@ -134,19 +182,10 @@ jobs:
             echo "::error file=AGENTS.md::the contract does not say the listing reports a location without going there. An agent handed a path is the reader most likely to \`cd\` into it."
             exit 1
           fi
-
-      # The zone manifest decides which files a template upgrade may overwrite in a
-      # creator's repository. Checked on the branch AND at the tag (release.yml runs
-      # the same script against the tagged tree): a check that does not run at the
-      # tag does not protect the artifact.
-      #
-      # One failure refuses the WHOLE manifest. Fetch depth must be full so the
-      # own-commit check can read the manifest's history.
-      - name: Fetch history for the manifest own-commit check
-        run: git fetch --unshallow || true
-
-      - name: The zone manifest is complete and passes the floor
-        run: node scripts/check-zone-manifest.mjs
+          if ! grep -qF 'Never hand over a localhost address.' AGENTS.md; then
+            echo "::error file=AGENTS.md::the contract does not forbid handing over a localhost address. The console page is the only address a reply carries (B-F3-6)."
+            exit 1
+          fi
 
       # The recognition section is GENERATED from recognition.md in vincentt-xr/agent-plugin.
       # Checked on the branch as well as at the tag, so a hand-edit is caught in review rather
@@ -160,6 +199,17 @@ jobs:
       # without going red. No fetch — the tracked copy is the whole point (B-F2-9(b)).
       - name: The create-endings section matches the CLI's fixture
         run: node scripts/check-create-endings.mjs
+
+      # QA-F5-C4. The outside-files contract is present, outside every generated region,
+      # host-neutral (B-F3-5), and carries "10 MB" / "2048 px", the literals the CLI's publish
+      # warning pins on the toolchain side. Template-only: a creator may rewrite AGENTS.md.
+      - name: The outside-files contract is present, pinned and host-neutral
+        run: node scripts/check-outside-assets.mjs
+
+      # The api's guide bundle cuts one connector guide topic per `## ` heading of GROUNDING.md, so a
+      # grounding edit must not drop, rename or reorder a guide topic.
+      - name: GROUNDING.md splits into the connector guide topics
+        run: node scripts/check-guide-topics.mjs
 
       # QA-F2-G34 assertion B. The step above checks the BRANCH; this one checks
       # what `vincentt init` ACTUALLY CLONES, which is the moving `latest` tag and
